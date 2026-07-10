@@ -64,7 +64,10 @@ function formatHours(h) {
   if (h === null || h === undefined || h === "") return "";
   const n = Number(h);
   if (Number.isNaN(n)) return "";
-  return Number.isInteger(n) ? String(n) : String(n);
+  // Show up to 2 decimal places, but trim any unnecessary trailing zeros
+  // (and a trailing decimal point) so 9.00 -> "9", 8.50 -> "8.5", and
+  // 7.25 / 10.75 are shown exactly as entered.
+  return n.toFixed(2).replace(/\.?0+$/, "");
 }
 
 function todayLocalISO() {
@@ -952,7 +955,7 @@ function renderBattleCard(match, { editable, showHours }) {
       : p.result === "loser" ? '<span class="battle-player-badge">❌ Loser</span>' : "";
 
     const hoursControl = showHours
-      ? `<input type="number" step="0.5" min="0" class="hours-input" data-match="${match.id}" data-player="${p.player_id}" value="${p.hours ?? ""}" placeholder="hrs" />`
+      ? `<input type="number" step="0.01" min="0" inputmode="decimal" class="hours-input" data-match="${match.id}" data-player="${p.player_id}" value="${p.hours ?? ""}" placeholder="hrs" />`
       : "";
 
     const rowActions = editable ? `
