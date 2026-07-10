@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mission WhiteCoat Lite — Admin Console</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚕️</text></svg>">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ===================================================================== -->
+<!-- LOGIN SCREEN                                                          -->
+<!-- ===================================================================== -->
+<div id="login-screen" class="screen">
+  <div class="login-card">
+    <div class="brand">
+      <div class="brand-icon">⚕</div>
+      <h1>Mission WhiteCoat <span>Lite</span></h1>
+      <p class="brand-sub">Admin Console &middot; v0.9</p>
+    </div>
+
+    <form id="login-form" autocomplete="on">
+      <label for="login-email">Email</label>
+      <input type="email" id="login-email" name="email" placeholder="admin@example.com" required autocomplete="username" />
+
+      <label for="login-password">Password</label>
+      <input type="password" id="login-password" name="password" placeholder="••••••••" required autocomplete="current-password" />
+
+      <button type="submit" id="login-btn" class="btn btn-primary btn-block">
+        <span class="btn-label">Sign In</span>
+        <span class="spinner hidden"></span>
+      </button>
+
+      <p id="login-error" class="form-error hidden"></p>
+    </form>
+
+    <p class="login-footnote">Restricted access &middot; Admins only</p>
+  </div>
+</div>
+
+<!-- ===================================================================== -->
+<!-- APP SHELL                                                             -->
+<!-- ===================================================================== -->
+<div id="app-shell" class="screen hidden">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-icon small">⚕</div>
+      <div>
+        <h2>WhiteCoat <span>Lite</span></h2>
+        <p>v0.9</p>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item active" data-view="dashboard"><span class="nav-icon">▣</span> Dashboard</button>
+      <button class="nav-item" data-view="players"><span class="nav-icon">☰</span> Player Manager</button>
+      <button class="nav-item" data-view="today"><span class="nav-icon">☑</span> Today's Participants</button>
+      <button class="nav-item" data-view="battles"><span class="nav-icon">⚔</span> Battle Generator</button>
+      <button class="nav-item" data-view="results"><span class="nav-icon">🏆</span> Study Hours &amp; Results</button>
+      <button class="nav-item" data-view="history"><span class="nav-icon">🕘</span> History</button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="admin-chip">
+        <div class="admin-avatar" id="admin-avatar">A</div>
+        <div>
+          <p id="admin-name">Admin</p>
+          <p id="admin-email" class="muted"></p>
+        </div>
+      </div>
+      <button id="logout-btn" class="btn btn-ghost btn-block">Log Out</button>
+    </div>
+  </aside>
+
+  <!-- Mobile top bar -->
+  <div class="mobile-topbar">
+    <button id="mobile-menu-btn" class="icon-btn">☰</button>
+    <h2>WhiteCoat <span>Lite</span></h2>
+    <span id="realtime-dot" class="realtime-dot" title="Realtime status"></span>
+  </div>
+
+  <!-- Main content -->
+  <main class="main">
+
+    <!-- ================= DASHBOARD ================= -->
+    <section id="view-dashboard" class="view active">
+      <header class="view-header">
+        <div>
+          <h1>Dashboard</h1>
+          <p class="muted" id="dashboard-date"></p>
+        </div>
+        <span id="realtime-dot-desktop" class="realtime-dot" title="Realtime status"></span>
+      </header>
+
+      <div class="stat-grid">
+        <div class="stat-card">
+          <p class="stat-label">Today's Date</p>
+          <p class="stat-value" id="stat-date">—</p>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Total Players</p>
+          <p class="stat-value" id="stat-total-players">0</p>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Today's Participants</p>
+          <p class="stat-value" id="stat-participants">0</p>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Current Status</p>
+          <p class="stat-value status-value" id="stat-status">Not Generated</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Quick Actions</h3>
+        <div class="quick-actions">
+          <button class="btn btn-secondary" data-goto="players">Manage Players</button>
+          <button class="btn btn-secondary" data-goto="today">Select Today's Participants</button>
+          <button class="btn btn-secondary" data-goto="battles">Generate Battles</button>
+          <button class="btn btn-secondary" data-goto="results">Enter Study Hours</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= PLAYER MANAGER ================= -->
+    <section id="view-players" class="view">
+      <header class="view-header">
+        <div>
+          <h1>Player Manager</h1>
+          <p class="muted">All admins see the same synced player list</p>
+        </div>
+        <button class="btn btn-primary" id="open-add-player">+ Add Player</button>
+      </header>
+
+      <div class="toolbar">
+        <input type="text" id="player-search" class="input" placeholder="Search players…" />
+        <button class="btn btn-ghost" id="open-import">Import Players</button>
+        <button class="btn btn-ghost" id="export-players">Export List</button>
+        <button class="btn btn-ghost" id="undo-delete-btn" disabled>Undo Last Delete</button>
+      </div>
+
+      <div class="panel">
+        <div id="players-list" class="data-list"></div>
+        <div id="players-empty" class="empty-state hidden">
+          <p class="empty-icon">🩺</p>
+          <p>No players yet. Add your first player to get started.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= TODAY'S PARTICIPANTS ================= -->
+    <section id="view-today" class="view">
+      <header class="view-header">
+        <div>
+          <h1>Today's Participants</h1>
+          <p class="muted" id="today-date-label"></p>
+        </div>
+        <span class="counter-chip"><span id="participant-count">0</span> selected</span>
+      </header>
+
+      <div class="toolbar">
+        <button class="btn btn-secondary" id="select-all-btn">Select All</button>
+        <button class="btn btn-ghost" id="clear-selection-btn">Clear Selection</button>
+      </div>
+
+      <div class="panel">
+        <div id="participants-list" class="checkbox-list"></div>
+        <div id="participants-empty" class="empty-state hidden">
+          <p class="empty-icon">🩺</p>
+          <p>No players available. Add players first in Player Manager.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= BATTLE GENERATOR ================= -->
+    <section id="view-battles" class="view">
+      <header class="view-header">
+        <div>
+          <h1>Battle Generator</h1>
+          <p class="muted">Even players → 1v1 &middot; Odd players → last battle is 1v1v1</p>
+        </div>
+        <button class="btn btn-primary" id="generate-battles-btn">⚔ Generate Battles</button>
+      </header>
+
+      <div class="toolbar">
+        <button class="btn btn-secondary" id="regenerate-all-btn">Regenerate All</button>
+        <button class="btn btn-ghost" id="copy-battles-btn">Copy Today's Battles</button>
+      </div>
+
+      <div class="panel">
+        <div id="battles-list" class="battles-grid"></div>
+        <div id="battles-empty" class="empty-state">
+          <p class="empty-icon">⚔</p>
+          <p>No battles generated yet for today.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= STUDY HOURS & RESULTS ================= -->
+    <section id="view-results" class="view">
+      <header class="view-header">
+        <div>
+          <h1>Study Hours &amp; Results</h1>
+          <p class="muted">Enter hours to auto-determine winners</p>
+        </div>
+        <button class="btn btn-primary" id="publish-results-btn">Publish Results</button>
+      </header>
+
+      <div class="toolbar">
+        <button class="btn btn-ghost" id="copy-results-btn">Copy Results</button>
+      </div>
+
+      <div class="panel">
+        <div id="results-list" class="battles-grid"></div>
+        <div id="results-empty" class="empty-state">
+          <p class="empty-icon">📋</p>
+          <p>Generate today's battles first, then enter study hours here.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= HISTORY ================= -->
+    <section id="view-history" class="view">
+      <header class="view-header">
+        <div>
+          <h1>History</h1>
+          <p class="muted">Permanent record of every published day</p>
+        </div>
+      </header>
+
+      <div class="panel">
+        <div id="history-list" class="data-list"></div>
+        <div id="history-empty" class="empty-state hidden">
+          <p class="empty-icon">🕘</p>
+          <p>No published history yet.</p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ===================================================================== -->
+<!-- MODALS                                                                -->
+<!-- ===================================================================== -->
+
+<div id="modal-backdrop" class="modal-backdrop hidden"></div>
+
+<!-- Add / Edit Player Modal -->
+<div id="player-modal" class="modal hidden">
+  <div class="modal-card">
+    <h3 id="player-modal-title">Add Player</h3>
+    <label for="player-name-input">Name</label>
+    <input type="text" id="player-name-input" class="input" placeholder="Player name" />
+    <input type="hidden" id="player-edit-id" />
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="player-modal-cancel">Cancel</button>
+      <button class="btn btn-primary" id="player-modal-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Import Players Modal -->
+<div id="import-modal" class="modal hidden">
+  <div class="modal-card">
+    <h3>Import Players</h3>
+    <p class="muted small">Paste one name per line. Duplicates and blank lines are ignored automatically.</p>
+    <textarea id="import-textarea" class="input textarea" rows="8" placeholder="Amit&#10;Marisha&#10;Zuha&#10;Nahid&#10;Rifat"></textarea>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="import-modal-cancel">Cancel</button>
+      <button class="btn btn-primary" id="import-modal-confirm">Import</button>
+    </div>
+  </div>
+</div>
+
+<!-- Generic Confirm Modal -->
+<div id="confirm-modal" class="modal hidden">
+  <div class="modal-card">
+    <h3 id="confirm-title">Are you sure?</h3>
+    <p id="confirm-message" class="muted"></p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="confirm-cancel">Cancel</button>
+      <button class="btn btn-danger" id="confirm-ok">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- History Detail Modal -->
+<div id="history-detail-modal" class="modal modal-wide hidden">
+  <div class="modal-card">
+    <h3 id="history-detail-title">Battle Day Details</h3>
+    <div id="history-detail-body" class="battles-grid"></div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="history-detail-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Move Player Modal (used for swap / move-to-another-battle) -->
+<div id="move-modal" class="modal hidden">
+  <div class="modal-card">
+    <h3 id="move-modal-title">Move Player</h3>
+    <p class="muted small" id="move-modal-subtitle"></p>
+    <label for="move-target-select">Move to battle</label>
+    <select id="move-target-select" class="input"></select>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="move-modal-cancel">Cancel</button>
+      <button class="btn btn-primary" id="move-modal-confirm">Move</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
