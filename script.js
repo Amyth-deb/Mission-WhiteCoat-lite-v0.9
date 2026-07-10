@@ -33,6 +33,9 @@ const state = {
   actionModalContext: null,
   realtimeChannels: [],
   pollHandle: null,
+  participantsDirty: false,   // true when local participant_ids has unsaved changes
+  participantsSaving: false,  // true while a save request is in-flight
+  participantsQueuedSave: false, // true when changes arrived during an in-flight save
 };
 
 /* -----------------------------------------------------------------------------
@@ -269,6 +272,17 @@ async function ensureTodayBattleDay() {
     if (insertErr) { toast("Failed to create today's record: " + insertErr.message, "error"); return; }
     data = created;
   }
+
+  // Guard against a lost update: if there is a local participant-selection
+  // change that hasn't been confirmed saved yet (or a save is currently
+  // in-flight), keep the local participant_ids instead of letting a
+  // realtime event or the 30s poll fallback overwrite it with a
+  // not-yet-caught-up copy from the server. Every other field still refreshes
+  // normally so status/date stay in sync.
+  if (state.battleDay && state.battleDay.id === data.id && (state.participantsDirty || state.participantsSaving)) {
+    data.participant_ids = state.battleDay.participant_ids;
+  }
+
   state.battleDay = data;
 }
 
@@ -526,35 +540,98 @@ function updateParticipantCount() {
   qs("#participant-count").textContent = participantPlayers().length;
 }
 
-async function toggleParticipant(playerId, checked) {
+/* ---------------------------------------------------------------------------
+   Participant selection saving — race-condition-safe.
+
+   Every entry point (checkbox toggle, Select All, Clear Selection) mutates
+   the local state.battleDay.participant_ids array SYNCHRONOUSLY and
+   immediately, so rapid clicks can never overwrite each other locally — each
+   click always builds on the very latest in-memory selection.
+
+   Persisting that selection to Supabase is handled by saveParticipants(),
+   which is serialized: only one UPDATE request is ever in flight at a time.
+   If local changes happen while a save is already running, they're captured
+   by the participantsDirty flag and automatically flushed in a follow-up
+   save the instant the in-flight one finishes — so no overlapping requests
+   are ever sent, and the very latest selection always wins.
+
+   ensureTodayBattleDay() (see above) also refuses to let a realtime event or
+   the 30s poll fallback clobber participant_ids while participantsDirty or
+   participantsSaving is true, so an in-progress local edit can never be
+   stomped by a stale server read arriving mid-save.
+   --------------------------------------------------------------------------- */
+
+function scheduleParticipantSave(immediate = false) {
+  clearTimeout(state.saveTimers.participants);
+  if (immediate) {
+    saveParticipants();
+  } else {
+    // Coalesce bursts of rapid clicks into a single save ~250ms after the
+    // last one, rather than firing a request per click.
+    state.saveTimers.participants = setTimeout(saveParticipants, 250);
+  }
+}
+
+async function saveParticipants() {
+  if (!state.battleDay) return;
+  if (!state.participantsDirty) return; // nothing unsaved — no-op, avoids redundant requests
+
+  if (state.participantsSaving) {
+    // A save is already in flight. Don't send an overlapping request —
+    // just note that another save is needed once this one finishes.
+    state.participantsQueuedSave = true;
+    return;
+  }
+
+  state.participantsSaving = true;
+  const battleDayId = state.battleDay.id;
+  const payload = state.battleDay.participant_ids.slice(); // snapshot of the latest selection
+  state.participantsDirty = false; // this payload is about to become the saved state
+
+  try {
+    const { error } = await sb
+      .from("battle_days")
+      .update({ participant_ids: payload })
+      .eq("id", battleDayId);
+    if (error) {
+      toast("Failed to save selection: " + error.message, "error");
+      state.participantsDirty = true; // retry needed
+    }
+  } catch (err) {
+    toast("Failed to save selection: " + err.message, "error");
+    state.participantsDirty = true;
+  } finally {
+    state.participantsSaving = false;
+    if (state.participantsQueuedSave || state.participantsDirty) {
+      // More changes arrived while this request was in flight (or it
+      // failed) — flush them immediately, still one request at a time.
+      state.participantsQueuedSave = false;
+      saveParticipants();
+    }
+  }
+}
+
+function toggleParticipant(playerId, checked) {
   if (!state.battleDay) return;
   const set = new Set(state.battleDay.participant_ids);
   if (checked) set.add(playerId); else set.delete(playerId);
   state.battleDay.participant_ids = Array.from(set);
+  state.participantsDirty = true;
 
   const item = qs(`.checkbox-item[data-id="${playerId}"]`);
   if (item) item.classList.toggle("checked", checked);
   updateParticipantCount();
 
-  debounce("participants", async () => {
-    const { error } = await sb
-      .from("battle_days")
-      .update({ participant_ids: state.battleDay.participant_ids })
-      .eq("id", state.battleDay.id);
-    if (error) toast("Failed to save selection: " + error.message, "error");
-  }, 400);
+  scheduleParticipantSave();
 }
 
 async function selectAllParticipants() {
   if (!state.battleDay) return;
   state.battleDay.participant_ids = state.players.map((p) => p.id);
-  const { error } = await sb
-    .from("battle_days")
-    .update({ participant_ids: state.battleDay.participant_ids })
-    .eq("id", state.battleDay.id);
-  if (error) { toast("Failed: " + error.message, "error"); return; }
+  state.participantsDirty = true;
   toast("All players selected.", "success");
   renderToday();
+  scheduleParticipantSave(true);
 }
 
 async function clearSelection() {
@@ -562,13 +639,10 @@ async function clearSelection() {
   const ok = await confirmDialog("Clear Selection", "Remove all players from today's participants?");
   if (!ok) return;
   state.battleDay.participant_ids = [];
-  const { error } = await sb
-    .from("battle_days")
-    .update({ participant_ids: [] })
-    .eq("id", state.battleDay.id);
-  if (error) { toast("Failed: " + error.message, "error"); return; }
+  state.participantsDirty = true;
   toast("Selection cleared.", "success");
   renderToday();
+  scheduleParticipantSave(true);
 }
 
 /* -----------------------------------------------------------------------------
