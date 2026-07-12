@@ -60,14 +60,61 @@ function initials(name) {
   return (parts[0][0] + (parts[1] ? parts[1][0] : "")).toUpperCase();
 }
 
-function formatHours(h) {
-  if (h === null || h === undefined || h === "") return "";
-  const n = Number(h);
-  if (Number.isNaN(n)) return "";
-  // Show up to 2 decimal places, but trim any unnecessary trailing zeros
-  // (and a trailing decimal point) so 9.00 -> "9", 8.50 -> "8.5", and
-  // 7.25 / 10.75 are shown exactly as entered.
-  return n.toFixed(2).replace(/\.?0+$/, "");
+/* ---------------------------------------------------------------------------
+   Hours + Minutes helpers (FIX 2 / FIX 3 / FIX 4)
+
+   Study time is still stored internally as a single decimal-hours number
+   (e.g. 8.5) — this is unchanged and requires no database migration, so any
+   existing record (8.5, 7.75, 6.333333, etc.) keeps working automatically.
+   These helpers only translate between that stored decimal and the separate
+   whole-number Hours / Minutes fields shown in the UI.
+   --------------------------------------------------------------------------- */
+
+// decimal hours -> { h: "8", m: "30" } for populating the two input fields.
+// Also used for backward compatibility: an old record like 8.5 converts to
+// { h: "8", m: "30" } automatically, with no migration needed.
+function decimalToHM(decimalHours) {
+  if (decimalHours === null || decimalHours === undefined || decimalHours === "") return { h: "", m: "" };
+  const total = Number(decimalHours);
+  if (Number.isNaN(total)) return { h: "", m: "" };
+
+  let h = Math.floor(total);
+  let m = Math.round((total - h) * 60);
+  if (m >= 60) { m -= 60; h += 1; } // guard against floating-point rounding pushing minutes to 60
+  if (m < 0) m = 0;
+  return { h: String(h), m: String(m) };
+}
+
+// Whole-number Hours + Minutes fields -> a single decimal-hours number for
+// storage (e.g. 8h 30m -> 8.5, 6h 20m -> 6.333333...). Winner/draw
+// calculations continue to use this decimal value, exactly as before.
+// Returns null only when BOTH fields are empty (i.e. nothing entered yet).
+function hmToDecimal(hoursStr, minutesStr) {
+  const hasHours = hoursStr !== "" && hoursStr !== null && hoursStr !== undefined;
+  const hasMinutes = minutesStr !== "" && minutesStr !== null && minutesStr !== undefined;
+  if (!hasHours && !hasMinutes) return null;
+
+  let h = hasHours ? parseInt(hoursStr, 10) : 0;
+  let m = hasMinutes ? parseInt(minutesStr, 10) : 0;
+  if (Number.isNaN(h)) h = 0;
+  if (Number.isNaN(m)) m = 0;
+
+  h = Math.max(0, h);           // Hours: integer, minimum 0
+  m = Math.max(0, Math.min(59, m)); // Minutes: integer, range 0–59
+
+  return h + m / 60;
+}
+
+// decimal hours -> display string, e.g. 8.5 -> "8h 30m", 9 -> "9h".
+// Used everywhere study time is shown as read-only text (Results, History,
+// Copy Results) per FIX 3.
+function formatHM(decimalHours) {
+  if (decimalHours === null || decimalHours === undefined || decimalHours === "") return "";
+  const { h, m } = decimalToHM(decimalHours);
+  if (h === "" && m === "") return "";
+  const hours = h === "" ? 0 : parseInt(h, 10);
+  const minutes = m === "" ? 0 : parseInt(m, 10);
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
 }
 
 function todayLocalISO() {
@@ -261,19 +308,39 @@ async function loadPlayers() {
   state.players = data;
 }
 
-async function ensureTodayBattleDay() {
-  const today = todayLocalISO();
-  let { data, error } = await sb.from("battle_days").select("*").eq("date", today).maybeSingle();
-  if (error) { toast("Failed to load today's data: " + error.message, "error"); return; }
+async function loadActiveBattleDay() {
+  // FIX 1 — Resume Unfinished Battle Day.
+  // A battle day stays "active" across midnight until Publish Results is
+  // clicked. On every load we resume the most recent battle_day that hasn't
+  // been published yet, rather than always looking up today's calendar date
+  // (which would silently strand yesterday's unpublished battles). Only when
+  // no unfinished day exists do we fall back to creating/loading today's row.
+  let { data: unfinished, error: unfinishedErr } = await sb
+    .from("battle_days")
+    .select("*")
+    .neq("status", "results_published")
+    .order("date", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (unfinishedErr) { toast("Failed to load battle day: " + unfinishedErr.message, "error"); return; }
+
+  let data = unfinished;
 
   if (!data) {
-    const { data: created, error: insertErr } = await sb
-      .from("battle_days")
-      .insert({ date: today })
-      .select()
-      .single();
-    if (insertErr) { toast("Failed to create today's record: " + insertErr.message, "error"); return; }
-    data = created;
+    const today = todayLocalISO();
+    const { data: todays, error: fetchErr } = await sb.from("battle_days").select("*").eq("date", today).maybeSingle();
+    if (fetchErr) { toast("Failed to load today's data: " + fetchErr.message, "error"); return; }
+    data = todays;
+
+    if (!data) {
+      const { data: created, error: insertErr } = await sb
+        .from("battle_days")
+        .insert({ date: today })
+        .select()
+        .single();
+      if (insertErr) { toast("Failed to create today's record: " + insertErr.message, "error"); return; }
+      data = created;
+    }
   }
 
   // Guard against a lost update: if there is a local participant-selection
@@ -317,7 +384,7 @@ async function syncBattleDayStatusIfNeeded() {
 
 async function refreshAll() {
   await loadPlayers();
-  await ensureTodayBattleDay();
+  await loadActiveBattleDay();
   await loadMatches();
   await syncBattleDayStatusIfNeeded();
   renderCurrentView();
@@ -509,7 +576,12 @@ async function importPlayers() {
    ----------------------------------------------------------------------------- */
 
 function renderToday() {
-  qs("#today-date-label").textContent = friendlyDate(todayLocalISO());
+  if (state.battleDay) {
+    const activeIsToday = state.battleDay.date === todayLocalISO();
+    qs("#today-date-label").textContent = activeIsToday
+      ? friendlyDate(state.battleDay.date)
+      : `${friendlyDate(state.battleDay.date)} — resumed unfinished battle day`;
+  }
   const list = qs("#participants-list");
   const empty = qs("#participants-empty");
 
@@ -558,7 +630,7 @@ function updateParticipantCount() {
    save the instant the in-flight one finishes — so no overlapping requests
    are ever sent, and the very latest selection always wins.
 
-   ensureTodayBattleDay() (see above) also refuses to let a realtime event or
+   loadActiveBattleDay() (see above) also refuses to let a realtime event or
    the 30s poll fallback clobber participant_ids while participantsDirty or
    participantsSaving is true, so an in-progress local edit can never be
    stomped by a stale server read arriving mid-save.
@@ -954,8 +1026,24 @@ function renderBattleCard(match, { editable, showHours }) {
       : p.result === "draw" ? '<span class="battle-player-badge">🤝 Draw</span>'
       : p.result === "loser" ? '<span class="battle-player-badge">❌ Loser</span>' : "";
 
-    const hoursControl = showHours
-      ? `<input type="number" step="0.01" min="0" inputmode="decimal" class="hours-input" data-match="${match.id}" data-player="${p.player_id}" value="${p.hours ?? ""}" placeholder="hrs" />`
+    // FIX 2 / FIX 6: compact Hours + Minutes entry, editable on the
+    // Study Hours & Results page. Old decimal records (e.g. 8.5) convert
+    // to { h: "8", m: "30" } automatically — see decimalToHM().
+    const hm = decimalToHM(p.hours);
+    const timeControl = showHours
+      ? `<div class="time-input-group" data-match="${match.id}" data-player="${p.player_id}">
+           <input type="number" inputmode="numeric" min="0" step="1" class="time-part-input" data-match="${match.id}" data-player="${p.player_id}" data-unit="hours" value="${hm.h}" placeholder="0" />
+           <span class="time-unit-label">h</span>
+           <input type="number" inputmode="numeric" min="0" max="59" step="1" class="time-part-input" data-match="${match.id}" data-player="${p.player_id}" data-unit="minutes" value="${hm.m}" placeholder="0" />
+           <span class="time-unit-label">m</span>
+         </div>`
+      : "";
+
+    // FIX 3: read-only "8h 30m" label everywhere study time is displayed but
+    // not being actively edited (Battle Generator's unassigned-player carry
+    // over, and History).
+    const timeLabel = (!showHours && p.hours !== null && p.hours !== undefined)
+      ? `<span class="battle-player-time">${escapeHtml(formatHM(p.hours))}</span>`
       : "";
 
     const rowActions = editable ? `
@@ -967,7 +1055,8 @@ function renderBattleCard(match, { editable, showHours }) {
       <div class="battle-player-row ${resultClass}">
         <span class="battle-player-name">${escapeHtml(p.name)}</span>
         <div style="display:flex;align-items:center;gap:8px;">
-          ${hoursControl}
+          ${timeControl}
+          ${timeLabel}
           ${badge}
           ${rowActions}
         </div>
@@ -1068,36 +1157,51 @@ function renderResults() {
 
   list.innerHTML = state.matches.map((m) => renderBattleCard(m, { editable: false, showHours: true })).join("");
 
-  qsa(".hours-input", list).forEach((input) => {
-    input.addEventListener("input", () => onHoursInput(input.dataset.match, input.dataset.player, input.value));
+  qsa(".time-part-input", list).forEach((input) => {
+    input.addEventListener("input", () =>
+      onTimePartInput(input.dataset.match, input.dataset.player, input.dataset.unit, input.value)
+    );
   });
 }
 
-async function onHoursInput(matchId, playerId, rawValue) {
+function onTimePartInput(matchId, playerId, unit, rawValue) {
   const match = state.matches.find((m) => m.id === matchId);
   if (!match) return;
+  const player = match.players.find((p) => p.player_id === playerId);
+  if (!player) return;
 
-  const value = rawValue === "" ? null : Number(rawValue);
-  match.players = match.players.map((p) => (p.player_id === playerId ? { ...p, hours: value } : p));
+  // Start from whatever h/m the stored decimal currently represents, then
+  // override just the part the admin edited, and re-derive the decimal.
+  // Storage stays decimal (FIX 4 — no schema/migration needed); winner/draw
+  // logic keeps consuming that same decimal, unchanged.
+  const current = decimalToHM(player.hours);
+  const hoursStr = unit === "hours" ? rawValue : current.h;
+  const minutesStr = unit === "minutes" ? rawValue : current.m;
+  const decimal = hmToDecimal(hoursStr, minutesStr);
+
+  match.players = match.players.map((p) => (p.player_id === playerId ? { ...p, hours: decimal } : p));
   match.players = computeMatchResults(match.players);
 
+  // FIX 5: auto-save, debounced so rapid keystrokes coalesce into one
+  // request rather than firing on every character.
   debounce(`hours-${matchId}`, async () => {
     const { error } = await sb.from("battle_matches").update({ players: match.players }).eq("id", matchId);
-    if (error) { toast("Failed to save hours: " + error.message, "error"); return; }
+    if (error) { toast("Failed to save study time: " + error.message, "error"); return; }
 
     // Re-render to reflect the computed winner/loser/draw badges, but keep
-    // whichever hours input the admin is still focused in so a brief pause
-    // while typing doesn't kick the cursor out of the field.
+    // whichever hours/minutes field the admin is still focused in (and
+    // cursor position) so a brief pause while typing doesn't kick focus out.
     const active = document.activeElement;
-    const wasHoursInput = active && active.classList && active.classList.contains("hours-input");
-    const focusMatch = wasHoursInput ? active.dataset.match : null;
-    const focusPlayer = wasHoursInput ? active.dataset.player : null;
-    const selectionStart = wasHoursInput ? active.selectionStart : null;
+    const wasTimeInput = active && active.classList && active.classList.contains("time-part-input");
+    const focusMatch = wasTimeInput ? active.dataset.match : null;
+    const focusPlayer = wasTimeInput ? active.dataset.player : null;
+    const focusUnit = wasTimeInput ? active.dataset.unit : null;
+    const selectionStart = wasTimeInput ? active.selectionStart : null;
 
     renderResults();
 
-    if (wasHoursInput) {
-      const restored = qs(`.hours-input[data-match="${focusMatch}"][data-player="${focusPlayer}"]`);
+    if (wasTimeInput) {
+      const restored = qs(`.time-part-input[data-match="${focusMatch}"][data-player="${focusPlayer}"][data-unit="${focusUnit}"]`);
       if (restored) {
         restored.focus();
         if (selectionStart !== null && restored.setSelectionRange) {
@@ -1233,11 +1337,11 @@ function copyTodaysResults() {
     .sort((a, b) => a.match_order - b.match_order)
     .forEach((m) => {
       m.players.forEach((p) => {
-        const hrs = formatHours(p.hours);
+        const timeStr = formatHM(p.hours);
         let suffix = "";
         if (p.result === "winner") suffix = " ✅ Winner";
         else if (p.result === "draw") suffix = " 🤝 Draw";
-        lines.push(`${p.name} — ${hrs || "?"}h${suffix}`);
+        lines.push(`${p.name} — ${timeStr || "?"}${suffix}`);
       });
     });
 
