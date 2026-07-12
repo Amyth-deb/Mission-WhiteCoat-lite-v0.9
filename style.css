@@ -469,17 +469,43 @@ label { display: block; font-size: 0.82rem; color: var(--text-1); margin: 12px 0
 .battle-player-name { font-weight: 600; font-size: 0.9rem; }
 .battle-player-badge { font-size: 0.75rem; }
 
-.hours-input {
-  width: 72px;
+/* FIX 2 / FIX 6 — compact Hours + Minutes entry: [ 8 ] h  [ 30 ] m.
+   Same visual language as the old single hours field (small rounded input),
+   just split into two narrow integer fields with inline unit labels so it
+   stays compact and usable on phones. */
+.time-input-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+
+.time-part-input {
+  width: 44px;
   background: rgba(255,255,255,0.04);
   border: 1px solid var(--glass-border);
   color: var(--text-0);
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 6px 4px;
   font-size: 0.85rem;
   text-align: center;
 }
-.hours-input:focus { outline: none; border-color: var(--accent); }
+.time-part-input:focus { outline: none; border-color: var(--accent); }
+
+.time-unit-label {
+  font-size: 0.78rem;
+  color: var(--text-2);
+  margin-right: 2px;
+}
+
+/* Read-only "8h 30m" label shown wherever study time is displayed but not
+   being actively edited (History, and elsewhere hours have carried over). */
+.battle-player-time {
+  font-size: 0.8rem;
+  color: var(--text-1);
+  font-weight: 600;
+  white-space: nowrap;
+}
 
 .battle-card-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .battle-card-actions .btn { padding: 6px 10px; font-size: 0.78rem; }
