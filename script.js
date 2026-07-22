@@ -36,6 +36,7 @@ const state = {
   participantsDirty: false,   // true when local participant_ids has unsaved changes
   participantsSaving: false,  // true while a save request is in-flight
   participantsQueuedSave: false, // true when changes arrived during an in-flight save
+  resultsDirty: false,  // true when Hours/Minutes have been typed but not yet saved via Save Result
 };
 
 /* -----------------------------------------------------------------------------
@@ -294,7 +295,11 @@ function renderCurrentView() {
   if (state.currentView === "players") renderPlayers();
   if (state.currentView === "today") renderToday();
   if (state.currentView === "battles") renderBattles();
-  if (state.currentView === "results") renderResults();
+  // Skip re-rendering Study Hours & Results while there are unsaved local
+  // edits (resultsDirty) — a background realtime event or the 30s poll must
+  // never tear down and recreate the Hours/Minutes inputs while the admin
+  // is mid-edit, since that's exactly what caused focus/cursor loss before.
+  if (state.currentView === "results" && !state.resultsDirty) renderResults();
   if (state.currentView === "history") renderHistory();
 }
 
@@ -358,6 +363,10 @@ async function loadActiveBattleDay() {
 
 async function loadMatches() {
   if (!state.battleDay) return;
+  // Preserve unsaved, in-progress study-time edits: don't let a realtime
+  // event or the 30s poll fallback replace state.matches (and silently
+  // discard what the admin typed) before they've clicked Save Result.
+  if (state.resultsDirty) return;
   const { data, error } = await sb
     .from("battle_matches")
     .select("*")
@@ -1164,6 +1173,13 @@ function renderResults() {
   });
 }
 
+// Typing in an Hours/Minutes field only updates the in-memory value — it
+// never touches the DOM and never saves. This is the fix for the
+// typing/cursor bug: the previous version re-rendered the results list
+// (recreating every input element) a few hundred milliseconds after each
+// keystroke, which reset focus and cursor position mid-type and could make
+// digits appear to insert in the wrong order. Now nothing re-renders and
+// nothing saves until the admin explicitly clicks "Save Result".
 function onTimePartInput(matchId, playerId, unit, rawValue) {
   const match = state.matches.find((m) => m.id === matchId);
   if (!match) return;
@@ -1172,44 +1188,49 @@ function onTimePartInput(matchId, playerId, unit, rawValue) {
 
   // Start from whatever h/m the stored decimal currently represents, then
   // override just the part the admin edited, and re-derive the decimal.
-  // Storage stays decimal (FIX 4 — no schema/migration needed); winner/draw
-  // logic keeps consuming that same decimal, unchanged.
+  // Storage stays decimal — winner/draw logic keeps consuming that same
+  // decimal value, unchanged.
   const current = decimalToHM(player.hours);
   const hoursStr = unit === "hours" ? rawValue : current.h;
   const minutesStr = unit === "minutes" ? rawValue : current.m;
   const decimal = hmToDecimal(hoursStr, minutesStr);
 
   match.players = match.players.map((p) => (p.player_id === playerId ? { ...p, hours: decimal } : p));
-  match.players = computeMatchResults(match.players);
+  // Note: winner/draw/loser is deliberately NOT recomputed here — that only
+  // happens at save time (see persistAllMatches()), so nothing re-renders
+  // while the admin is still typing.
+  state.resultsDirty = true;
+}
 
-  // FIX 5: auto-save, debounced so rapid keystrokes coalesce into one
-  // request rather than firing on every character.
-  debounce(`hours-${matchId}`, async () => {
-    const { error } = await sb.from("battle_matches").update({ players: match.players }).eq("id", matchId);
-    if (error) { toast("Failed to save study time: " + error.message, "error"); return; }
+// Recomputes winner/draw/loser for every battle from its current in-memory
+// hours, then persists all battles in one go. Shared by the "Save Result"
+// button and by Publish Results, so publishing always reflects exactly what
+// was last saved — never stale, never partially-typed data.
+async function persistAllMatches() {
+  for (const match of state.matches) {
+    match.players = computeMatchResults(match.players);
+  }
+  const responses = await Promise.all(
+    state.matches.map((m) => sb.from("battle_matches").update({ players: m.players }).eq("id", m.id))
+  );
+  const failed = responses.find((r) => r.error);
+  if (failed) throw failed.error;
+  state.resultsDirty = false; // saved — safe for background refreshes to resume
+}
 
-    // Re-render to reflect the computed winner/loser/draw badges, but keep
-    // whichever hours/minutes field the admin is still focused in (and
-    // cursor position) so a brief pause while typing doesn't kick focus out.
-    const active = document.activeElement;
-    const wasTimeInput = active && active.classList && active.classList.contains("time-part-input");
-    const focusMatch = wasTimeInput ? active.dataset.match : null;
-    const focusPlayer = wasTimeInput ? active.dataset.player : null;
-    const focusUnit = wasTimeInput ? active.dataset.unit : null;
-    const selectionStart = wasTimeInput ? active.selectionStart : null;
-
-    renderResults();
-
-    if (wasTimeInput) {
-      const restored = qs(`.time-part-input[data-match="${focusMatch}"][data-player="${focusPlayer}"][data-unit="${focusUnit}"]`);
-      if (restored) {
-        restored.focus();
-        if (selectionStart !== null && restored.setSelectionRange) {
-          try { restored.setSelectionRange(selectionStart, selectionStart); } catch (e) { /* number inputs may not support this in all browsers */ }
-        }
-      }
-    }
-  }, 500);
+async function saveResults() {
+  if (!state.battleDay || state.matches.length === 0) { toast("No battles to save yet.", "warn"); return; }
+  const btn = qs("#save-results-btn");
+  btn.disabled = true;
+  try {
+    await persistAllMatches();
+    toast("Results saved.", "success");
+    await refreshAll();
+  } catch (err) {
+    toast("Failed to save results: " + err.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function publishResults() {
@@ -1221,25 +1242,38 @@ async function publishResults() {
     if (!proceed) return;
   }
 
-  const snapshot = state.matches.map((m) => ({
-    match_order: m.match_order,
-    players: m.players,
-    locked: m.locked,
-  }));
+  const btn = qs("#publish-results-btn");
+  btn.disabled = true;
+  try {
+    // Ensure whatever is currently entered gets saved and its winner/draw
+    // recomputed before it's snapshotted into history — publishing always
+    // reflects exactly what's on screen right now.
+    await persistAllMatches();
 
-  const { error: upsertErr } = await sb
-    .from("battle_results")
-    .upsert(
-      { battle_day_id: state.battleDay.id, date: state.battleDay.date, battles: snapshot, published_at: new Date().toISOString() },
-      { onConflict: "battle_day_id" }
-    );
-  if (upsertErr) { toast("Publish failed: " + upsertErr.message, "error"); return; }
+    const snapshot = state.matches.map((m) => ({
+      match_order: m.match_order,
+      players: m.players,
+      locked: m.locked,
+    }));
 
-  const { error: statusErr } = await sb.from("battle_days").update({ status: "results_published" }).eq("id", state.battleDay.id);
-  if (statusErr) { toast("Publish failed: " + statusErr.message, "error"); return; }
+    const { error: upsertErr } = await sb
+      .from("battle_results")
+      .upsert(
+        { battle_day_id: state.battleDay.id, date: state.battleDay.date, battles: snapshot, published_at: new Date().toISOString() },
+        { onConflict: "battle_day_id" }
+      );
+    if (upsertErr) throw upsertErr;
 
-  toast("Results published.", "success");
-  await refreshAll();
+    const { error: statusErr } = await sb.from("battle_days").update({ status: "results_published" }).eq("id", state.battleDay.id);
+    if (statusErr) throw statusErr;
+
+    toast("Results published.", "success");
+    await refreshAll();
+  } catch (err) {
+    toast("Publish failed: " + err.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /* -----------------------------------------------------------------------------
@@ -1435,6 +1469,7 @@ function wireEvents() {
 
   // Results
   qs("#publish-results-btn").addEventListener("click", publishResults);
+  qs("#save-results-btn").addEventListener("click", saveResults);
   qs("#copy-results-btn").addEventListener("click", copyTodaysResults);
 
   // History
